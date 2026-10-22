@@ -76,14 +76,60 @@ class Button:
 
 class GBFSAgent:
     """Easy difficulty: Greedy Best-First Search."""
+
+    # Corners location on the board for corner advantage
+    CORNERS = [(0,0), (0,7), (7,0), (7,7)]
+
+    # Weight for the priority on what should be took into factor
+    WC, WM, WF= 25, 5, 2
+
     def __init__(self, rules):
         self.rules = rules
 
+    # Step 
+    def simulateMove(self, gridLogic, move, player):
+        row, col = move
+        toFlip = self.rules.swappableTiles(row, col, gridLogic, player)
+        newGrid = [rowGrid[:] for rowGrid in gridLogic]
+        newGrid[row][col] = player
+        for(rowSelected, columnSelected) in toFlip:
+            newGrid[rowSelected][columnSelected] = player
+        return newGrid, len(toFlip)
+
+    # Step 4
+    def cornerScore(self, grid, player):
+        userCorner = sum(1 for (row, column) in self.CORNERS if grid[row][column] == player)
+        cpuCorner = sum(1 for (row, column) in self.CORNERS if grid[row][column] == -player)
+        return cpuCorner - userCorner
+
+    def mobilityScore(self, grid, player):
+        userMobility = len(self.rules.findAvailMoves(grid, player))
+        cpuMobility = len(self.rules.findAvailMoves(grid, -player))
+        return cpuMobility - userMobility
+
+    def heuristicScore(self, grid, flipCount, player):
+        C = self.cornerScore(grid, player)
+        M = self.mobilityScore(grid, player)
+        F = flipCount
+        return self.WC * C + self.WM * M + self.WF * F
+
+    # From previous step, make a move
+    # Update will be done when it exits the 
     def getMove(self, gridLogic, player):
-        # TODO: implement GBFS (choose the move with the best heuristic value)
-        # Placeholder so the game is playable: pick a random legal move.
         moves = self.rules.findAvailMoves(gridLogic, player)
-        return random.choice(moves) if moves else None
+        print(f'Existing moves: {moves}')
+        if not moves:
+            return None
+
+        scored = []
+        for move in moves:
+            newGrid, flipCount = self.simulateMove(gridLogic, move, player)
+            h = self.heuristicScore(newGrid, flipCount, player)
+            scored.append((h, move))
+
+        bestHeuristicScore = max(h for h, _ in scored)
+        bestMoves = [m for h, m in scored if h == bestHeuristicScore]
+        return random.choice(bestMoves)
 
 
 class AlphaBetaAgent:
