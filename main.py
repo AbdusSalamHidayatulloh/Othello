@@ -87,17 +87,155 @@ class GBFSAgent:
 
 
 class AlphaBetaAgent:
-    """Hard difficulty: Minimax with Alpha-Beta Pruning."""
+    """Hard difficulty: Minimax with Alpha-Beta Pruning.
+
+    Board values: 1 = white, -1 = black, 0 = empty.
+    This agent can play either colour, but the game's default AI is black (-1).
+    It never modifies the live board during its search.
+    """
+
+    # Used ONLY to search promising moves first (move ordering).
+    # This can improve the number of alpha-beta cutoffs.
+    POSITION_WEIGHTS = (
+        (120, -20,  20,   5,   5,  20, -20, 120),
+        (-20, -40,  -5,  -5,  -5,  -5, -40, -20),
+        ( 20,  -5,  15,   3,   3,  15,  -5,  20),
+        (  5,  -5,   3,   3,   3,   3,  -5,   5),
+        (  5,  -5,   3,   3,   3,   3,  -5,   5),
+        ( 20,  -5,  15,   3,   3,  15,  -5,  20),
+        (-20, -40,  -5,  -5,  -5,  -5, -40, -20),
+        (120, -20,  20,   5,   5,  20, -20, 120),
+    )
+    CORNERS = ((0, 0), (0, 7), (7, 0), (7, 7))
+
     def __init__(self, rules, depth=4):
         self.rules = rules
         self.depth = depth
+        self.nodesExplored = 0
+        self.leavesEvaluated = 0
+        self.pruningCount = 0
+        self.executionTime = 0.0
+        self.lastScore = None
+
+    def _simulate(self, board, move, player):
+        """Create a *copy* of the board after a legal move."""
+        row, col = move
+        new_board = [line[:] for line in board]
+        flips = self.rules.swappableTiles(row, col, new_board, player)
+        new_board[row][col] = player
+        for r, c in flips:
+            new_board[r][c] = player
+        return new_board
+
+    def _ordered_moves(self, moves):
+        """Explore corners and generally strong squares earlier."""
+        return sorted(
+            moves,
+            key=lambda move: self.POSITION_WEIGHTS[move[0]][move[1]],
+            reverse=True,
+        )
+
+    def _evaluate(self, board, ai_player):
+        """Evaluate a position from the perspective of the AI.
+
+        Matches the three terms of the proposal's linear weighted heuristic:
+        corner control, mobility and disc difference.
+        """
+        self.leavesEvaluated += 1
+        human = -ai_player
+        ai_moves = self.rules.findAvailMoves(board, ai_player)
+        human_moves = self.rules.findAvailMoves(board, human)
+        disc_difference = sum(cell * ai_player for line in board for cell in line)
+
+        # When neither side has legal moves, the game has ended.
+        # Wins/losses should outweigh ordinary positional heuristics.
+        if not ai_moves and not human_moves:
+            if disc_difference > 0:
+                return 100000 + disc_difference
+            if disc_difference < 0:
+                return -100000 + disc_difference
+            return 0
+
+        corner_difference = sum(board[r][c] * ai_player for r, c in self.CORNERS)
+        mobility_difference = len(ai_moves) - len(human_moves)
+        return 100 * corner_difference + 10 * mobility_difference + disc_difference
+
+    def _minimax(self, board, current_player, ai_player, depth, alpha, beta):
+        """Return the best score assuming both players make optimal moves."""
+        self.nodesExplored += 1
+
+        if depth == 0:
+            return self._evaluate(board, ai_player)
+
+        moves = self.rules.findAvailMoves(board, current_player)
+        if not moves:
+            # Othello rule: a player must PASS when no legal move exists.
+            opponent_moves = self.rules.findAvailMoves(board, -current_player)
+            if not opponent_moves:
+                return self._evaluate(board, ai_player)  # game is over
+            # A pass doesn't place a disc, so it doesn't consume a search ply.
+            return self._minimax(board, -current_player, ai_player, depth, alpha, beta)
+
+        if current_player == ai_player:  # MAX
+            best = float('-inf')
+            for move in self._ordered_moves(moves):
+                next_board = self._simulate(board, move, current_player)
+                score = self._minimax(next_board, -current_player, ai_player, depth - 1, alpha, beta)
+                best = max(best, score)
+                alpha = max(alpha, best)
+                if alpha >= beta:
+                    self.pruningCount += 1
+                    break
+            return best
+
+        # MIN: assume the opponent chooses the most damaging reply.
+        best = float('inf')
+        for move in self._ordered_moves(moves):
+            next_board = self._simulate(board, move, current_player)
+            score = self._minimax(next_board, -current_player, ai_player, depth - 1, alpha, beta)
+            best = min(best, score)
+            beta = min(beta, best)
+            if alpha >= beta:
+                self.pruningCount += 1
+                break
+        return best
 
     def getMove(self, gridLogic, player):
-        # TODO: implement Alpha-Beta Pruning
-        # Placeholder so the game is playable: pick a random legal move.
-        moves = self.rules.findAvailMoves(gridLogic, player)
-        return random.choice(moves) if moves else None
+        """Return the best legal (row, col), or None when the AI must pass."""
+        from time import perf_counter
 
+        started = perf_counter()
+        self.nodesExplored = 1  # include the root position
+        self.leavesEvaluated = 0
+        self.pruningCount = 0
+        self.lastScore = None
+
+        moves = self.rules.findAvailMoves(gridLogic, player)
+        if not moves:
+            self.executionTime = perf_counter() - started
+            return None
+
+        best_move = None
+        best_score = float('-inf')
+        alpha, beta = float('-inf'), float('inf')
+
+        for move in self._ordered_moves(moves):
+            next_board = self._simulate(gridLogic, move, player)
+            score = self._minimax(next_board, -player, player, self.depth - 1, alpha, beta)
+            if score > best_score:
+                best_score = score
+                best_move = move
+            alpha = max(alpha, best_score)
+
+        self.executionTime = perf_counter() - started
+        self.lastScore = best_score
+        print(
+            f'[Alpha-Beta] move={best_move} | depth={self.depth} | '
+            f'score={best_score} | time={self.executionTime:.3f}s | '
+            f'nodes={self.nodesExplored} | evaluated={self.leavesEvaluated} | '
+            f'cutoffs={self.pruningCount}'
+        )
+        return best_move
 
 # =====================================================
 # MAIN GAME CLASS
