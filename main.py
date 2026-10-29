@@ -6,6 +6,7 @@ import os
 import time
 from contextlib import redirect_stdout
 from statistics import mean
+from tutorial_data import TutorialData
 
 # =====================================================
 # UTILITY FUNCTIONS
@@ -503,8 +504,9 @@ class Othello:
         self.menuButtons = {
             '1v1':       Button('1 vs 1',        (cx, 380)),
             'ai':        Button('1 vs Computer', (cx, 470)),
-            'benchmark': Button('Benchmark',     (cx, 560)),
-            'quit':      Button('Quit',          (cx, 650)),
+            'tut':       Button('How to Play',   (cx, 560)),
+            'benchmark': Button('Benchmark',     (cx, 650)),
+            'quit':      Button('Quit',          (cx, 740)),
         }
         self.difficultyButtons = {
             'easy': Button('Easy (GBFS)',        (cx, 380)),
@@ -541,6 +543,13 @@ class Othello:
         self.benchResultButtons = {'back': Button('Main Menu', (cx, 700))}
 
         self.RUN = True
+
+        self.tutorialStep = 0
+        self.tutorialDone = False
+        self.tutorialButton = {
+            'next': Button('Next', (950, 600), (180, 50)),
+            'menu': Button('Menu', (950, 660), (180, 50)),
+        }
 
     # ---------- Main loop ----------
 
@@ -604,6 +613,17 @@ class Othello:
         print(f'[Move] {who} -> {colLetter}{row} (row={row}, col={col}) | flipped {len(flipped)}: {flipped}')
         print(f'[Score] White {white} - {black} Black')
 
+    # ---------- Loading Tutorial Steps ----------
+    
+    def loadTutorialStep(self):
+        step = TutorialData.TUTORIAL_STEPS[self.tutorialStep]
+        if step['board'] is not None:
+            self.grid.loadBoardForTutorial(step['board'])
+        self.currentPlayer = step.get('player', 1)
+        self.mode = '1v1'
+        self.tutorialDone = False
+        self.state = 'tut'
+        
     # ---------- Input ----------
 
     def input(self):
@@ -643,6 +663,8 @@ class Othello:
                         self.clickBenchmark(event.pos)
                     elif self.state == 'benchrun':
                         self.clickBenchRun(event.pos)
+                    elif self.state == 'tut':
+                        self.clickTutorial(event.pos)
                     elif self.state == 'benchresult':
                         self.clickBenchResult(event.pos)
 
@@ -653,6 +675,10 @@ class Othello:
             self.state = 'difficulty'
         elif self.menuButtons['benchmark'].isClicked(pos):
             self.state = 'benchmark'
+        elif self.menuButtons['tut'].isClicked(pos):
+            self.grid.reset()
+            self.tutorialStep = 0
+            self.loadTutorialStep()
         elif self.menuButtons['quit'].isClicked(pos):
             self.RUN = False
 
@@ -712,6 +738,39 @@ class Othello:
         if self.benchResultButtons['back'].isClicked(pos):
             self.state = 'menu'
 
+    def clickTutorial(self, pos):
+        step = TutorialData.TUTORIAL_STEPS[self.tutorialStep]
+        
+        if self.tutorialButton['menu'].isClicked(pos):
+            self.state = 'menu'
+            return
+        
+        if step['goal'] == 'next' or self.tutorialDone:
+            if self.tutorialButton['next'].isClicked(pos):
+                self.advanceTutorial()
+        
+        else:
+            col, row = (pos[0] - 80) // 80, (pos[1] - 80)//80
+            if(row, col) == step['target']:
+                self.playTutorialMove(row, col)
+    
+    def playTutorialMove(self, row, col):
+        grid = self.grid
+        toFlip = grid.swappableTiles(row, col, grid.gridLogic, self.currentPlayer)
+        grid.insertToken(grid.gridLogic, self.currentPlayer, row, col)
+        grid.animateTransitions(toFlip, self.currentPlayer)
+        for(r, c) in toFlip:
+            grid.gridLogic[r][c] *= -1
+            grid.tokens[(r, c)].player *= -1
+        self.tutorialDone = True
+        
+    def advanceTutorial(self):
+        self.tutorialStep += 1
+        if self.tutorialStep >= len(TutorialData.TUTORIAL_STEPS):
+            self.state = 'menu'
+        else:
+            self.loadTutorialStep()
+                
     def clickBoard(self, pos):
         """Left click on the board: try to play a move."""
         # Ignore clicks while it is the computer's turn
@@ -804,6 +863,10 @@ class Othello:
             self.drawBenchRun(mousePos)
         elif self.state == 'benchresult':
             self.drawBenchResult(mousePos)
+        elif self.state == 'tut':
+            self.screen.fill((0, 0, 0))
+            self.grid.drawGrid(self.screen)
+            self.drawTutorialPanel()
         else:
             # 'playing', 'paused' and 'gameover' all show the board
             self.screen.fill((0, 0, 0))
@@ -815,6 +878,23 @@ class Othello:
                 self.drawGameOver(mousePos)
 
         pygame.display.update()
+        
+    def drawTutorialPanel(self):
+        mousePos = pygame.mouse.get_pos()
+        step = TutorialData.TUTORIAL_STEPS[self.tutorialStep]
+        pygame.draw.rect(self.screen, (35, 25, 15), (800, 0, 300, 800))
+        pygame.draw.line(self.screen, (230, 200, 150), (800,0), (800, 800), 2)
+        self.screen.blit(self.font.render(
+            f'Step {self.tutorialStep + 1}/{len(TutorialData.TUTORIAL_STEPS)}', True, (230, 200, 150)
+        ), (830, 60))
+        
+        for i, line in enumerate(step['text']):
+            self.screen.blit(self.smallFont.render(line, True, 'White'), (815, 130 + i * 36))
+            
+        
+        if step['goal'] == 'next' or self.tutorialDone:
+            self.tutorialButton['next'].draw(self.screen, self.font, mousePos)
+        self.tutorialButton['menu'].draw(self.screen, self.font, mousePos)
 
     def drawCentered(self, text, font, y, color='White'):
         """Draw text horizontally centred at height y."""
@@ -1063,6 +1143,12 @@ class Grid:
             for (row, col) in availMoves:
                 # Small white square in the middle of the cell
                 pygame.draw.rect(window, 'White', (80 + col * 80 + 30, 80 + row * 80 + 30, 20, 20))
+                
+        if self.GAME.state == 'tut' and not self.animating and not self.GAME.tutorialDone:
+            step = TutorialData.TUTORIAL_STEPS[self.GAME.tutorialStep]
+            if step['goal'] == 'move':
+                r, c = step['target']
+                pygame.draw.rect(window, (225, 220, 0), (80 + c * 80 + 25, 80 + r * 80 + 25, 30, 30))
 
     def printGameLogicBoard(self):
         """Debug helper: print the logic grid to the terminal."""
@@ -1154,6 +1240,15 @@ class Grid:
         for cell in cells:                            # finish with the final token image
             self.tokens[cell].image = finalImage
         self.animating = False
+        
+    def loadBoardForTutorial(self, board, window=None):
+        self.tokens = {}
+        self.gridLogic = [[0] * self.x for _ in range(self.y)]
+        for r in range(self.y):
+            for c in range(self.x):
+                if board[r][c] != 0:
+                    self.insertToken(self.gridLogic, board[r][c], r, c)
+        self.animating = False
 
 
 # =====================================================
@@ -1173,7 +1268,6 @@ class Token:
 
     def draw(self, window):
         window.blit(self.image, (self.posX, self.posY))
-
 
 # =====================================================
 # START THE GAME
