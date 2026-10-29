@@ -92,7 +92,7 @@ class GBFSAgent:
     def __init__(self, rules):
         self.rules = rules
 
-    # Step 
+    # Step  3
     def simulateMove(self, gridLogic, move, player):
         row, col = move
         toFlip = self.rules.swappableTiles(row, col, gridLogic, player)
@@ -128,15 +128,24 @@ class GBFSAgent:
         print(f'Existing moves: {moves}')
         if not moves:
             return None
-
+        
+        # Saving score for move comparison
         scored = []
+        # Repeate all available movement till it's
         for move in moves:
+            # Simulate a new grid and try the make a move and count
+            # how many disk is turned
             newGrid, flipCount = self.simulateMove(gridLogic, move, player)
+            # Calculating the heuristic score
             h = self.heuristicScore(newGrid, flipCount, player)
+            print("Move", move, "-> Score", h)
+            # Adding score to the variable scored
             scored.append((h, move))
 
+        # Return the best moves made after calculating
         bestHeuristicScore = max(h for h, _ in scored)
         bestMoves = [m for h, m in scored if h == bestHeuristicScore]
+        print("Best score: ", bestHeuristicScore, "Move taken: ", bestMoves)
         return random.choice(bestMoves)
 
 
