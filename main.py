@@ -377,33 +377,59 @@ class PracticeCoach:
 
 
 # =====================================================
-# BENCHMARK RUNNER (Alpha-Beta vs GBFS, tanpa animasi)
+# BENCHMARK RUNNER (pilih AI Player 1 vs Player 2, tanpa animasi)
 # =====================================================
 
 class BenchmarkRunner:
-    """Menjalankan game AlphaBeta vs GBFS satu langkah per panggilan step().
+    """Menjalankan game benchmark (tanpa animasi) satu langkah per panggilan step().
+    Player 1 dan Player 2 bisa diisi AI apa pun ('AlphaBeta' / 'GBFS'), termasuk yang sama.
+    Warna ditukar tiap game (P1 putih di game ganjil, hitam di game genap) supaya 50/50.
     Dipakai oleh menu Benchmark di main.py DAN oleh benchmark.py.
     `rules` = objek apa pun yang punya findAvailMoves, swappableTiles, countTokens
-    (Grid asli atau HeadlessRules di benchmark.py)."""
+    (Grid asli atau HeadlessRules di benchmark.py).
+    Tanpa algo1/algo2, defaultnya tetap AlphaBeta (P1) vs GBFS (P2)."""
 
     RESULT_DIR = 'benchmark_result'     # nama folder tempat file CSV disimpan
+    LABELS = {'AlphaBeta': 'Alpha-Beta', 'GBFS': 'GBFS'}    # nama untuk layar
+    TAGS = {'AlphaBeta': 'AB', 'GBFS': 'GBFS'}              # nama untuk file CSV
 
-    def __init__(self, rules, totalGames, depth):
+    def __init__(self, rules, totalGames, depth, algo1='AlphaBeta', algo2='GBFS', depth2=None):
         self.rules = rules
         self.totalGames = totalGames
         self.depth = depth
+        self.depths = {1: depth, 2: depth if depth2 is None else depth2}   # depth AB per pemain
+        self.algos = {1: algo1, 2: algo2}   # slot pemain -> nama algoritma
         self.gameIndex = 0              # jumlah game yang sudah selesai
         self.games = []                 # hasil per game
-        self.moves = []                 # data per langkah: (algoritma, detik, node, cutoff)
+        self.moves = []                 # data per langkah: (algoritma, detik, node, cutoff, slot)
         self.finished = False
         self.startGame()
 
+    def label(self, slot):
+        return self.LABELS[self.algos[slot]]
+
+    def shortLabel(self, slot):
+        """Nama pendek untuk panel layar, mis. 'AB d3' atau 'GBFS'."""
+        if self.algos[slot] == 'AlphaBeta':
+            return f'AB d{self.depths[slot]}'
+        return 'GBFS'
+
+    def fullLabel(self, slot):
+        if self.algos[slot] == 'AlphaBeta':
+            return f'Alpha-Beta (depth {self.depths[slot]})'
+        return 'GBFS'
+
+    def makeAgent(self, slot):
+        if self.algos[slot] == 'AlphaBeta':
+            return AlphaBetaAgent(self.rules, self.depths[slot])
+        return GBFSAgent(self.rules)
+
     def startGame(self):
-        # Selang-seling siapa yang jalan duluan (putih) supaya seimbang
-        self.abFirst = (self.gameIndex % 2 == 0)
-        ab = ('AlphaBeta', AlphaBetaAgent(self.rules, self.depth))
-        gb = ('GBFS', GBFSAgent(self.rules))
-        self.agents = {1: ab, -1: gb} if self.abFirst else {1: gb, -1: ab}
+        # Selang-seling warna: P1 putih di game ke-1, 3, 5, ... supaya seimbang
+        self.p1White = (self.gameIndex % 2 == 0)
+        a1 = (1, self.algos[1], self.makeAgent(1))
+        a2 = (2, self.algos[2], self.makeAgent(2))
+        self.agents = {1: a1, -1: a2} if self.p1White else {1: a2, -1: a1}
 
         # Papan awal (terpisah dari papan game yang asli)
         self.board = [[0] * 8 for _ in range(8)]
@@ -432,7 +458,7 @@ class BenchmarkRunner:
                 self.player = -self.player          # pass
             return
 
-        name, agent = self.agents[self.player]
+        slot, name, agent = self.agents[self.player]
         start = time.perf_counter()
         with redirect_stdout(io.StringIO()):        # sembunyikan print bawaan agent
             move = agent.getMove(board, self.player)
@@ -442,7 +468,7 @@ class BenchmarkRunner:
             nodes, cutoffs = agent.nodesExplored, agent.pruningCount
         else:
             nodes, cutoffs = len(moves), 0          # GBFS: node = jumlah kandidat yang dievaluasi
-        self.moves.append((name, elapsed, nodes, cutoffs))
+        self.moves.append((name, elapsed, nodes, cutoffs, slot))
 
         row, col = move
         flips = rules.swappableTiles(row, col, board, self.player)
@@ -453,13 +479,13 @@ class BenchmarkRunner:
 
     def endGame(self):
         white, black = self.rules.countTokens(self.board)
-        abDiscs, gbDiscs = (white, black) if self.abFirst else (black, white)
-        if abDiscs > gbDiscs:   winner = 'AlphaBeta'
-        elif gbDiscs > abDiscs: winner = 'GBFS'
+        p1Discs, p2Discs = (white, black) if self.p1White else (black, white)
+        if p1Discs > p2Discs:   winner = 'P1'
+        elif p2Discs > p1Discs: winner = 'P2'
         else:                   winner = 'Draw'
 
-        self.games.append({'game': self.gameIndex + 1, 'abFirst': self.abFirst,
-                           'abDiscs': abDiscs, 'gbDiscs': gbDiscs, 'winner': winner})
+        self.games.append({'game': self.gameIndex + 1, 'p1White': self.p1White,
+                           'p1Discs': p1Discs, 'p2Discs': p2Discs, 'winner': winner})
         self.gameIndex += 1
 
         if self.gameIndex >= self.totalGames:
@@ -468,37 +494,93 @@ class BenchmarkRunner:
             self.startGame()
 
     def summaryLines(self):
-        """Ringkasan untuk 4 metrik di proposal (dipakai untuk layar dan console)."""
+        """Ringkasan 4 metrik di proposal, per sisi (P1 / P2), untuk layar dan console."""
         n = len(self.games)
-        abWins = sum(g['winner'] == 'AlphaBeta' for g in self.games)
-        gbWins = sum(g['winner'] == 'GBFS' for g in self.games)
-        draws = n - abWins - gbWins
+        p1Wins = sum(g['winner'] == 'P1' for g in self.games)
+        p2Wins = sum(g['winner'] == 'P2' for g in self.games)
+        draws = n - p1Wins - p2Wins
 
         lines = [
-            f'Alpha-Beta (depth {self.depth}) vs GBFS | {n} games',
-            f'Win rate   : AB {abWins} ({abWins / n * 100:.1f}%) | '
-            f'GBFS {gbWins} ({gbWins / n * 100:.1f}%) | Draw {draws} ({draws / n * 100:.1f}%)',
+            f'P1 {self.fullLabel(1)} vs P2 {self.fullLabel(2)} | {n} games',
+            f'Win rate   : P1 {p1Wins} ({p1Wins / n * 100:.1f}%) | '
+            f'P2 {p2Wins} ({p2Wins / n * 100:.1f}%) | Draw {draws} ({draws / n * 100:.1f}%)',
         ]
-        for label, flag in (('AB first ', True), ('AB second', False)):
-            sub = [g for g in self.games if g['abFirst'] == flag]
+        for label, who, flag in (('P1 as White', 'P1', True), ('P1 as Black', 'P1', False),
+                                 ('P2 as White', 'P2', False), ('P2 as Black', 'P2', True)):
+            sub = [g for g in self.games if g['p1White'] == flag]
             if sub:
-                w = sum(g['winner'] == 'AlphaBeta' for g in sub)
-                lines.append(f'{label}  : AB won {w}/{len(sub)}')
+                w = sum(g['winner'] == who for g in sub)
+                lines.append(f'{label} : {who} won {w}/{len(sub)}')
 
-        margins = [abs(g['abDiscs'] - g['gbDiscs']) for g in self.games]
-        signed = [g['abDiscs'] - g['gbDiscs'] for g in self.games]
+        margins = [abs(g['p1Discs'] - g['p2Discs']) for g in self.games]
+        signed = [g['p1Discs'] - g['p2Discs'] for g in self.games]
         lines.append(f'Avg margin : {mean(margins):.2f} discs (winner - loser)')
-        lines.append(f'Avg AB-GBFS: {mean(signed):+.2f} discs')
+        lines.append(f'Avg P1-P2  : {mean(signed):+.2f} discs')
 
-        times = {k: [m[1] * 1000 for m in self.moves if m[0] == k] for k in ('AlphaBeta', 'GBFS')}
-        nodes = {k: [m[2] for m in self.moves if m[0] == k] for k in ('AlphaBeta', 'GBFS')}
-        cuts = [m[3] for m in self.moves if m[0] == 'AlphaBeta']
-        lines.append(f'Time/move  : AB {mean(times["AlphaBeta"]):.2f} ms (max {max(times["AlphaBeta"]):.1f}) | '
-                     f'GBFS {mean(times["GBFS"]):.2f} ms (max {max(times["GBFS"]):.1f})')
-        lines.append(f'Nodes/move : AB {mean(nodes["AlphaBeta"]):.1f} (max {max(nodes["AlphaBeta"])}) | '
-                     f'GBFS {mean(nodes["GBFS"]):.1f} (max {max(nodes["GBFS"])})')
-        lines.append(f'AB cutoffs : {mean(cuts):.1f} per move')
+        def vals(slot, idx, scale=1):
+            return [m[idx] * scale for m in self.moves if m[4] == slot]
+
+        def timeText(slot):
+            v = vals(slot, 1, 1000)
+            return f'{mean(v):.2f} ms (max {max(v):.1f})' if v else '-'
+
+        def nodeText(slot):
+            v = vals(slot, 2)
+            return f'{mean(v):.1f} (max {max(v)})' if v else '-'
+
+        def cutText(slot):
+            if self.algos[slot] != 'AlphaBeta':
+                return '-'
+            v = vals(slot, 3)
+            return f'{mean(v):.1f}' if v else '-'
+
+        lines.append(f'Time/move  : P1 {timeText(1)} | P2 {timeText(2)}')
+        lines.append(f'Nodes/move : P1 {nodeText(1)} | P2 {nodeText(2)}')
+        lines.append(f'Cutoffs    : P1 {cutText(1)} | P2 {cutText(2)} per move')
         return lines
+
+    def summaryRows(self):
+        """Ringkasan dalam bentuk tabel (metrik, P1, P2) untuk file CSV."""
+        n = len(self.games)
+        p1Wins = sum(g['winner'] == 'P1' for g in self.games)
+        p2Wins = sum(g['winner'] == 'P2' for g in self.games)
+        draws = n - p1Wins - p2Wins
+        signed = [g['p1Discs'] - g['p2Discs'] for g in self.games]
+        margins = [abs(x) for x in signed]
+
+        def vals(slot, idx, scale=1):
+            return [m[idx] * scale for m in self.moves if m[4] == slot]
+
+        def stat(slot, idx, scale, fn, nd):
+            v = vals(slot, idx, scale)
+            return round(fn(v), nd) if v else '-'
+
+        rows = [
+            ['metrik', 'P1', 'P2'],
+            ['algoritma', self.fullLabel(1), self.fullLabel(2)],
+            ['total_game', n, n],
+            ['menang', p1Wins, p2Wins],
+            ['seri', draws, draws],
+            ['win_rate_persen', round(p1Wins / n * 100, 1), round(p2Wins / n * 100, 1)],
+        ]
+        for color, p1Plays in (('putih', True), ('hitam', False)):
+            g1 = [g for g in self.games if g['p1White'] == p1Plays]     # game di mana P1 pakai warna ini
+            g2 = [g for g in self.games if g['p1White'] != p1Plays]     # game di mana P2 pakai warna ini
+            rows.append([f'game_sebagai_{color}', len(g1), len(g2)])
+            rows.append([f'menang_sebagai_{color}',
+                         sum(g['winner'] == 'P1' for g in g1),
+                         sum(g['winner'] == 'P2' for g in g2)])
+        rows += [
+            ['rata_selisih_disc_sendiri_minus_lawan', round(mean(signed), 2), round(-mean(signed), 2)],
+            ['rata_selisih_disc_pemenang_minus_kalah', round(mean(margins), 2), round(mean(margins), 2)],
+            ['waktu_per_langkah_ms_rata', stat(1, 1, 1000, mean, 3), stat(2, 1, 1000, mean, 3)],
+            ['waktu_per_langkah_ms_max', stat(1, 1, 1000, max, 3), stat(2, 1, 1000, max, 3)],
+            ['node_per_langkah_rata', stat(1, 2, 1, mean, 1), stat(2, 2, 1, mean, 1)],
+            ['node_per_langkah_max', stat(1, 2, 1, max, 0), stat(2, 2, 1, max, 0)],
+        ]
+        cut = [stat(slot, 3, 1, mean, 1) if self.algos[slot] == 'AlphaBeta' else '-' for slot in (1, 2)]
+        rows.append(['cutoff_per_langkah_rata', cut[0], cut[1]])
+        return rows
 
     @classmethod
     def ensureResultDir(cls):
@@ -513,8 +595,14 @@ class BenchmarkRunner:
     def saveCsv(self):
         folder = self.ensureResultDir()         # dibuat otomatis kalau belum ada / terhapus
 
-        gamesFile = os.path.join(folder, f'hasil_games_depth{self.depth}.csv')
-        movesFile = os.path.join(folder, f'hasil_moves_depth{self.depth}.csv')
+        def tagOf(slot):
+            algo = self.algos[slot]
+            return self.TAGS[algo] + (str(self.depths[slot]) if algo == 'AlphaBeta' else '')
+        stamp = time.strftime('%Y%m%d_%H%M%S')      # supaya file lama tidak tertimpa
+        tag = f'{tagOf(1)}-vs-{tagOf(2)}_{stamp}'   # mis. AB3-vs-GBFS_20261103_153045
+        gamesFile = os.path.join(folder, f'hasil_games_{tag}.csv')
+        movesFile = os.path.join(folder, f'hasil_moves_{tag}.csv')
+        self.summaryFile = os.path.join(folder, f'hasil_summary_{tag}.csv')
 
         with open(gamesFile, 'w', newline='') as f:
             w = csv.DictWriter(f, fieldnames=self.games[0].keys())
@@ -522,8 +610,10 @@ class BenchmarkRunner:
             w.writerows(self.games)
         with open(movesFile, 'w', newline='') as f:
             w = csv.writer(f)
-            w.writerow(['algoritma', 'waktu_detik', 'node', 'cutoff'])
+            w.writerow(['algoritma', 'waktu_detik', 'node', 'cutoff', 'pemain'])
             w.writerows(self.moves)
+        with open(self.summaryFile, 'w', newline='') as f:
+            csv.writer(f).writerows(self.summaryRows())
         return gamesFile, movesFile
 
 
@@ -589,11 +679,13 @@ class Othello:
         # ---- Buttons for each screen ----
         cx = 550                        # horizontal centre of the window
         self.menuButtons = {
-            '1v1':       Button('1 vs 1',        (cx, 380)),
-            'ai':        Button('1 vs Computer', (cx, 470)),
-            'tut':       Button('How to Play',   (cx, 560)),
-            'benchmark': Button('Benchmark',     (cx, 650)),
-            'quit':      Button('Quit',          (cx, 740)),
+            # Baris atas (2 tombol)
+            '1v1':       Button('1 vs 1',        (cx - 175, 420)),
+            'ai':        Button('1 vs Computer', (cx + 175, 420)),
+            # Baris bawah (3 tombol)
+            'tut':       Button('How to Play',   (cx - 350, 510)),
+            'benchmark': Button('Benchmark',     (cx,       510)),
+            'quit':      Button('Quit',          (cx + 350, 510)),
         }
         self.playModeButtons = {
             'normal':   Button('Normal Mode',   (cx, 380)),
@@ -622,18 +714,26 @@ class Othello:
         }
 
         # ---- Benchmark ----
-        self.benchDepth = 3
+        self.benchDepth1 = 3                    # depth AB untuk Player 1
+        self.benchDepth2 = 3                    # depth AB untuk Player 2
         self.benchGames = 100
         self.depthOptions = [2, 3, 4]
         self.gameOptions = [4, 10, 50, 100]     # 4 = tes cepat
+        self.algoOptions = ['AlphaBeta', 'GBFS']
+        self.benchAlgo1 = 'AlphaBeta'           # AI Player 1
+        self.benchAlgo2 = 'GBFS'                # AI Player 2
         self.benchmark = None                   # BenchmarkRunner yang sedang jalan
         self.benchLines = []                    # teks hasil untuk layar result
 
+        labels = BenchmarkRunner.LABELS
         self.benchButtons = {
-            'depth': Button(f'Depth: {self.benchDepth}',  (cx, 340)),
-            'games': Button(f'Games: {self.benchGames}',  (cx, 420)),
-            'start': Button('Start',                      (cx, 530)),
-            'back':  Button('Back',                       (cx, 610)),
+            'p1':     Button(f'P1: {labels[self.benchAlgo1]}', (cx - 250, 330)),
+            'p2':     Button(f'P2: {labels[self.benchAlgo2]}', (cx + 250, 330)),
+            'depth1': Button(f'Depth: {self.benchDepth1}',     (cx - 250, 410)),   # hanya muncul kalau P1 = AB
+            'depth2': Button(f'Depth: {self.benchDepth2}',     (cx + 250, 410)),   # hanya muncul kalau P2 = AB
+            'games':  Button(f'Games: {self.benchGames}',      (cx, 520)),
+            'start':  Button('Start',                          (cx, 600)),
+            'back':   Button('Back',                           (cx, 680)),
         }
         self.benchRunButtons = {'cancel': Button('Cancel', (950, 700), (240, 60))}
         self.benchResultButtons = {'back': Button('Main Menu', (cx, 700))}
@@ -978,20 +1078,45 @@ class Othello:
         elif self.gameOverButtons['menu'].isClicked(pos):
             self.state = 'menu'
 
+    def benchButtonVisible(self, name):
+        """Tombol depth hanya tampil untuk pemain yang memakai Alpha-Beta."""
+        if name == 'depth1':
+            return self.benchAlgo1 == 'AlphaBeta'
+        if name == 'depth2':
+            return self.benchAlgo2 == 'AlphaBeta'
+        return True
+
     def clickBenchmark(self, pos):
         b = self.benchButtons
-        if b['depth'].isClicked(pos):
-            # Klik untuk ganti depth (2 -> 3 -> 4 -> 2 ...)
-            i = (self.depthOptions.index(self.benchDepth) + 1) % len(self.depthOptions)
-            self.benchDepth = self.depthOptions[i]
-            b['depth'].text = f'Depth: {self.benchDepth}'
+        labels = BenchmarkRunner.LABELS
+        if b['p1'].isClicked(pos):
+            # Klik untuk ganti AI Player 1 (AlphaBeta <-> GBFS)
+            i = (self.algoOptions.index(self.benchAlgo1) + 1) % len(self.algoOptions)
+            self.benchAlgo1 = self.algoOptions[i]
+            b['p1'].text = f'P1: {labels[self.benchAlgo1]}'
+        elif b['p2'].isClicked(pos):
+            # Klik untuk ganti AI Player 2 (AlphaBeta <-> GBFS)
+            i = (self.algoOptions.index(self.benchAlgo2) + 1) % len(self.algoOptions)
+            self.benchAlgo2 = self.algoOptions[i]
+            b['p2'].text = f'P2: {labels[self.benchAlgo2]}'
+        elif self.benchButtonVisible('depth1') and b['depth1'].isClicked(pos):
+            # Klik untuk ganti depth Player 1 (2 -> 3 -> 4 -> 2 ...)
+            i = (self.depthOptions.index(self.benchDepth1) + 1) % len(self.depthOptions)
+            self.benchDepth1 = self.depthOptions[i]
+            b['depth1'].text = f'Depth: {self.benchDepth1}'
+        elif self.benchButtonVisible('depth2') and b['depth2'].isClicked(pos):
+            # Klik untuk ganti depth Player 2
+            i = (self.depthOptions.index(self.benchDepth2) + 1) % len(self.depthOptions)
+            self.benchDepth2 = self.depthOptions[i]
+            b['depth2'].text = f'Depth: {self.benchDepth2}'
         elif b['games'].isClicked(pos):
             # Klik untuk ganti jumlah game (4 -> 10 -> 50 -> 100 -> 4 ...)
             i = (self.gameOptions.index(self.benchGames) + 1) % len(self.gameOptions)
             self.benchGames = self.gameOptions[i]
             b['games'].text = f'Games: {self.benchGames}'
         elif b['start'].isClicked(pos):
-            self.benchmark = BenchmarkRunner(self.grid, self.benchGames, self.benchDepth)
+            self.benchmark = BenchmarkRunner(self.grid, self.benchGames, self.benchDepth1,
+                                             self.benchAlgo1, self.benchAlgo2, self.benchDepth2)
             self.state = 'benchrun'
         elif b['back'].isClicked(pos):
             self.state = 'menu'
@@ -1106,10 +1231,9 @@ class Othello:
                 self.benchLines = self.benchmark.summaryLines()
                 gamesFile, movesFile = self.benchmark.saveCsv()
                 # Tampilkan folder + nama file saja (bukan path lengkap) supaya muat di layar
-                self.benchLines.append(
-                    f'CSV: {BenchmarkRunner.RESULT_DIR}/{os.path.basename(gamesFile)}, '
-                    f'{os.path.basename(movesFile)}'
-                )
+                self.benchLines.append(f'Hasil Game: {BenchmarkRunner.RESULT_DIR}/{os.path.basename(gamesFile)}')
+                self.benchLines.append(f'Hasil Moves: {BenchmarkRunner.RESULT_DIR}/{os.path.basename(movesFile)}')
+                self.benchLines.append(f'Kesimpulan Game: {BenchmarkRunner.RESULT_DIR}/{os.path.basename(self.benchmark.summaryFile)}')
                 for line in self.benchLines:        # cetak juga ke console
                     print(line)
                 print(f'Path lengkap: {os.path.dirname(gamesFile)}')
@@ -1194,9 +1318,10 @@ class Othello:
     def drawBenchmark(self, mousePos):
         self.screen.fill((35, 25, 15))
         self.drawCentered('Benchmark', self.bigFont, 200, (230, 200, 150))
-        self.drawCentered('Alpha-Beta vs GBFS (tanpa animasi)', self.smallFont, 260)
-        for button in self.benchButtons.values():
-            button.draw(self.screen, self.font, mousePos)
+        self.drawCentered('Warna bergantian tiap game (tanpa animasi)', self.smallFont, 260)
+        for name, button in self.benchButtons.items():
+            if self.benchButtonVisible(name):
+                button.draw(self.screen, self.font, mousePos)
 
     def drawBenchRun(self, mousePos):
         bm = self.benchmark
@@ -1216,13 +1341,13 @@ class Othello:
         pygame.draw.rect(self.screen, (35, 25, 15), (800, 0, 300, 800))
         pygame.draw.line(self.screen, (230, 200, 150), (800, 0), (800, 800), 3)
 
-        self.screen.blit(self.smallFont.render(f'Benchmark: Depth {bm.depth}', True, (230, 200, 150)), (830, 65))
+        self.screen.blit(self.smallFont.render('Benchmark', True, (230, 200, 150)), (830, 65))
         self.screen.blit(self.font.render(f'Game {min(done + 1, total)} / {total}', True, 'White'), (830, 110))
         pygame.draw.rect(self.screen, (230, 200, 150), (830, 150, 240, 20), 3)
         pygame.draw.rect(self.screen, (130, 90, 45), (833, 153, int(234 * done / total), 14))
 
-        whiteName = 'Alpha-Beta' if bm.abFirst else 'GBFS'
-        blackName = 'GBFS' if bm.abFirst else 'Alpha-Beta'
+        whiteName = f'P1 {bm.shortLabel(1)}' if bm.p1White else f'P2 {bm.shortLabel(2)}'
+        blackName = f'P2 {bm.shortLabel(2)}' if bm.p1White else f'P1 {bm.shortLabel(1)}'
         self.screen.blit(self.smallFont.render(f'White: {whiteName}', True, 'White'), (830, 200))
         self.screen.blit(self.iconWhite, (830, 240))
         self.screen.blit(self.bigFont.render(f'{white}', True, 'White'), (910, 248))
@@ -1236,11 +1361,11 @@ class Othello:
         pygame.draw.rect(self.screen, (230, 200, 150), (830, 470, 240, 20), 3)
         pygame.draw.rect(self.screen, (90, 150, 90), (833, 473, int(234 * gameProgress), 14))
 
-        abWins = sum(g['winner'] == 'AlphaBeta' for g in bm.games)
-        gbWins = sum(g['winner'] == 'GBFS' for g in bm.games)
+        p1Wins = sum(g['winner'] == 'P1' for g in bm.games)
+        p2Wins = sum(g['winner'] == 'P2' for g in bm.games)
         self.screen.blit(self.smallFont.render('So far', True, (230, 200, 150)), (830, 540))
-        self.screen.blit(self.smallFont.render(f'Alpha-Beta: {abWins}', True, 'White'), (830, 575))
-        self.screen.blit(self.smallFont.render(f'GBFS: {gbWins}', True, 'White'), (830, 610))
+        self.screen.blit(self.smallFont.render(f'P1 {bm.shortLabel(1)}: {p1Wins}', True, 'White'), (830, 575))
+        self.screen.blit(self.smallFont.render(f'P2 {bm.shortLabel(2)}: {p2Wins}', True, 'White'), (830, 610))
 
         for button in self.benchRunButtons.values():
             button.draw(self.screen, self.font, mousePos)
@@ -1250,7 +1375,7 @@ class Othello:
         self.drawCentered('Benchmark Result', self.bigFont, 90, (230, 200, 150))
         for i, line in enumerate(self.benchLines):
             label = self.smallFont.render(line, True, 'White')
-            self.screen.blit(label, (100, 170 + i * 42))
+            self.screen.blit(label, (100, 160 + i * 36))
         for button in self.benchResultButtons.values():
             button.draw(self.screen, self.font, mousePos)
 
