@@ -4,6 +4,8 @@ import io
 import csv
 import os
 import time
+from queue import Queue
+from threading import Thread
 from contextlib import redirect_stdout
 from statistics import mean
 from tutorial_data import TutorialData
@@ -303,6 +305,78 @@ class AlphaBetaAgent:
 
 
 # =====================================================
+# PRACTICE COACH (uses the same Alpha-Beta algorithm at depth 6)
+# =====================================================
+
+class PracticeCoach:
+    """Derive truthful hints/explanations from the real board position.
+
+    The depth-6 Alpha-Beta score chooses the move; the explanation describes
+    directly measurable consequences of that move, not a fabricated search line.
+    """
+
+    DEPTH = 6
+
+    def __init__(self, rules):
+        self.rules = rules
+
+    def analyze(self, board, player):
+        agent = AlphaBetaAgent(self.rules, depth=self.DEPTH)
+        best_move = agent.getMove(board, player)
+        if best_move is None:
+            return None
+
+        moves = self.rules.findAvailMoves(board, player)
+        options = {}
+        for move in moves:
+            result = agent._simulate(board, move, player)
+            own_discs = sum(v == player for row in result for v in row)
+            enemy_discs = sum(v == -player for row in result for v in row)
+            options[move] = {
+                'own_mobility': len(self.rules.findAvailMoves(result, player)),
+                'enemy_mobility': len(self.rules.findAvailMoves(result, -player)),
+                'enemy_corner_moves': sum(
+                    m in AlphaBetaAgent.CORNERS
+                    for m in self.rules.findAvailMoves(result, -player)
+                ),
+                'own_corners': sum(result[r][c] == player for r, c in AlphaBetaAgent.CORNERS),
+                'enemy_corners': sum(result[r][c] == -player for r, c in AlphaBetaAgent.CORNERS),
+                'own_discs': own_discs,
+                'enemy_discs': enemy_discs,
+                'flips': len(self.rules.swappableTiles(move[0], move[1], board, player)),
+            }
+
+        selected = options[best_move]
+        other = [v for m, v in options.items() if m != best_move]
+        if best_move in AlphaBetaAgent.CORNERS:
+            hint = 'Ada sudut yang bisa kamu amankan. Perhatikan kotak-kotak di pojok papan.'
+            explanation = 'Langkah ini menguasai sudut. Bidak di sudut tidak bisa dibalik oleh lawan.'
+        elif selected['enemy_corner_moves'] == 0 and any(v['enemy_corner_moves'] > 0 for v in other):
+            hint = 'Periksa apakah pilihan langkahmu memberi lawan jalan menuju sudut.'
+            explanation = 'Langkah ini tidak memberi lawan kesempatan langsung mengambil sudut, tidak seperti beberapa alternatif.'
+        elif other and selected['enemy_mobility'] < max(v['enemy_mobility'] for v in other):
+            hint = 'Perhatikan jumlah langkah sah yang akan dimiliki lawan sesudah giliranmu.'
+            explanation = f'Lawan memiliki {selected["enemy_mobility"]} langkah sah setelah langkah ini, lebih sedikit daripada pada beberapa alternatif.'
+        elif other and selected['flips'] < max(v['flips'] for v in other):
+            hint = 'Jangan hanya mengejar jumlah bidak yang dibalik. Pikirkan balasan lawan.'
+            explanation = 'Langkah ini tidak membalik bidak terbanyak, tetapi mendapat nilai pencarian terbaik pada depth 6.'
+        elif other and selected['own_mobility'] > min(v['own_mobility'] for v in other):
+            hint = 'Coba pertahankan banyak pilihan langkah sah untuk giliran-giliran berikutnya.'
+            explanation = 'Posisi setelah langkah ini mempertahankan pilihan langkahmu; Coach juga memperhitungkan balasan lawan.'
+        else:
+            hint = 'Bandingkan langkah yang tersedia. Perhatikan sudut, mobilitas, dan balasan lawan.'
+            explanation = 'Coach memilih langkah ini berdasarkan pencarian Alpha-Beta depth 6; tidak ada satu faktor langsung yang cukup menjelaskan seluruh keputusan.'
+
+        return {
+            'move': best_move,
+            'score': agent.lastScore,
+            'hint': hint,
+            'explanation': explanation,
+            **selected,
+        }
+
+
+# =====================================================
 # BENCHMARK RUNNER (Alpha-Beta vs GBFS, tanpa animasi)
 # =====================================================
 
@@ -472,6 +546,7 @@ class Othello:
         self.bigFont = pygame.font.Font(None, 64)
         self.font = pygame.font.Font(None, 40)
         self.smallFont = pygame.font.Font(None, 30)
+        self.coachFont = pygame.font.Font(None, 25)
 
         # Player values used in the logic grid: 1 = white, -1 = black, 0 = empty
         self.player1 = 1
@@ -489,15 +564,27 @@ class Othello:
         self.iconBlack = pygame.transform.scale(self.grid.blacktoken, (50, 50))
 
         # ---- Game state ----
-        # state: 'menu' | 'difficulty' | 'playing' | 'paused' | 'gameover'
+        # state: 'menu' | 'playmode' | 'difficulty' | 'playing' | 'paused' | 'gameover'
         #        | 'benchmark' | 'benchrun' | 'benchresult'
         self.state = 'menu'
         self.mode = None                # '1v1' or 'ai'
+        self.playStyle = 'normal'        # 'normal' or 'practice' (AI matches only)
         self.difficulty = None          # 'easy' (GBFS) or 'hard' (Alpha-Beta)
         self.agent = None               # the AI object (only in 'ai' mode)
         self.aiPlayer = -1              # the computer plays black, the human plays white
         self.lastMoveTime = 0           # used to add a short pause before the AI moves
         self.message = ''               # info text (e.g. "Black has no moves")
+
+        # Practice Coach: search runs in a daemon thread so Pygame can draw
+        # "Analyzing..." and still accept input during a depth-6 search.
+        self.coachResultQueue = Queue()
+        self.coachWorker = None
+        self.coachGeneration = 0         # prevents old results appearing in a new turn/game
+        self.coachCacheKey = None
+        self.coachCache = None
+        self.coachView = None            # None | 'hint' | 'answer'
+        self.coachRequest = None         # latest requested view while searching
+        self.coachError = ''
 
         # ---- Buttons for each screen ----
         cx = 550                        # horizontal centre of the window
@@ -507,6 +594,11 @@ class Othello:
             'tut':       Button('How to Play',   (cx, 560)),
             'benchmark': Button('Benchmark',     (cx, 650)),
             'quit':      Button('Quit',          (cx, 740)),
+        }
+        self.playModeButtons = {
+            'normal':   Button('Normal Mode',   (cx, 380)),
+            'practice': Button('Practice Mode', (cx, 470)),
+            'back':     Button('Back',          (cx, 560)),
         }
         self.difficultyButtons = {
             'easy': Button('Easy (GBFS)',        (cx, 380)),
@@ -519,6 +611,10 @@ class Othello:
         }
         # Tombol Pause di panel kanan saat bermain, dan menu pause-nya
         self.pauseButton = Button('Pause', (950, 730), (240, 60))
+        self.coachButtons = {
+            'hint': Button('Get Hint', (950, 223), (240, 52)),
+            'answer': Button('Show Answer', (950, 285), (240, 52)),
+        }
         self.pauseButtons = {
             'resume':  Button('Resume',    (cx, 380)),
             'restart': Button('Restart',   (cx, 460)),
@@ -563,10 +659,12 @@ class Othello:
 
     # ---------- Starting / ending a game ----------
 
-    def startGame(self, mode, difficulty=None):
+    def startGame(self, mode, difficulty=None, playStyle='normal'):
         """Reset the board and begin a new game with the given settings."""
         self.mode = mode
+        self.playStyle = playStyle if mode == 'ai' else 'normal'
         self.difficulty = difficulty
+        self.resetCoach()
         self.grid.reset()
         self.currentPlayer = 1
         self.message = ''
@@ -576,11 +674,164 @@ class Othello:
             if difficulty == 'easy':
                 self.agent = GBFSAgent(self.grid)
             else:
-                self.agent = AlphaBetaAgent(self.grid)
+                self.agent = AlphaBetaAgent(self.grid, depth=4)
         else:
             self.agent = None
 
         self.state = 'playing'
+
+    # ---------- Practice Coach ----------
+
+    def resetCoach(self):
+        """Invalidate hints after every move, restart or new game."""
+        self.coachGeneration += 1
+        self.coachCacheKey = None
+        self.coachCache = None
+        self.coachView = None
+        self.coachRequest = None
+        self.coachError = ''
+
+    def isPracticeTurn(self):
+        return (self.state == 'playing' and self.mode == 'ai'
+                and self.playStyle == 'practice'
+                and self.currentPlayer != self.aiPlayer)
+
+    def coachKey(self):
+        return (self.coachGeneration, self.currentPlayer,
+                tuple(tuple(row) for row in self.grid.gridLogic))
+
+    def requestCoach(self, view):
+        """Request a hint/answer; never block the UI on Alpha-Beta search."""
+        if not self.isPracticeTurn():
+            return
+        key = self.coachKey()
+        self.coachError = ''
+        if self.coachCache is not None and self.coachCacheKey == key:
+            self.coachView = view
+            self.coachRequest = None
+            return
+        self.coachView = None
+        self.coachRequest = view
+        self.startCoachWorker()
+
+    def startCoachWorker(self):
+        if self.coachRequest is None or not self.isPracticeTurn():
+            return
+        if self.coachWorker is not None and self.coachWorker.is_alive():
+            return                # one search at a time, no thread pile-up
+
+        key = self.coachKey()
+        snapshot = [row[:] for row in self.grid.gridLogic]
+        player = self.currentPlayer
+        result_queue = self.coachResultQueue
+        rules = self.grid
+
+        def work():
+            try:
+                result = PracticeCoach(rules).analyze(snapshot, player)
+                result_queue.put((key, result, ''))
+            except Exception as exc:
+                result_queue.put((key, None, str(exc)))
+
+        self.coachWorker = Thread(target=work, daemon=True, name='OthelloPracticeCoach')
+        self.coachWorker.start()
+
+    def updateCoach(self):
+        """Consume completed results on the main thread, ignoring stale boards."""
+        while not self.coachResultQueue.empty():
+            key, result, error = self.coachResultQueue.get_nowait()
+            if (self.isPracticeTurn() and self.coachRequest is not None
+                    and key == self.coachKey()):
+                self.coachError = error or ''
+                self.coachCacheKey = key
+                self.coachCache = result
+                self.coachView = self.coachRequest if result is not None else None
+                self.coachRequest = None
+
+        # If the position changed while searching, any old result was ignored.
+        # The most recent request is processed as soon as the worker is idle.
+        if self.coachRequest is not None:
+            self.startCoachWorker()
+
+    @staticmethod
+    def moveLabel(move):
+        return f'{"ABCDEFGH"[move[1]]}{move[0]}'
+
+    def drawWrappedText(self, content, x, y, maxWidth, color='White', maxY=690):
+        """Render a short paragraph inside the narrow (300 px) coach panel."""
+        if self.message:
+            maxY = min(maxY, 653)  # leave room for a pass/skip notification
+        for paragraph in content.split('\n'):
+            line = ''
+            for word in paragraph.split():
+                candidate = f'{line} {word}'.strip()
+                if line and self.coachFont.size(candidate)[0] > maxWidth:
+                    if y + 26 > maxY:
+                        return y
+                    self.screen.blit(self.coachFont.render(line, True, color), (x, y))
+                    y += 26
+                    line = word
+                else:
+                    line = candidate
+            if line:
+                if y + 26 > maxY:
+                    return y
+                self.screen.blit(self.coachFont.render(line, True, color), (x, y))
+                y += 26
+        return y
+
+    def drawPracticePanel(self):
+        """Score, hint and answer share the existing right-hand game panel."""
+        mouse = pygame.mouse.get_pos()
+        white, black = self.grid.countTokens(self.grid.gridLogic)
+        pygame.draw.rect(self.screen, (35, 25, 15), (800, 0, 300, 800))
+        pygame.draw.line(self.screen, (230, 200, 150), (800, 0), (800, 800), 3)
+        self.screen.blit(self.font.render('PRACTICE', True, (230, 200, 150)), (825, 35))
+        diff = 'Easy (GBFS)' if self.difficulty == 'easy' else 'Hard (AB 4)'
+        self.screen.blit(self.smallFont.render(diff, True, 'White'), (825, 78))
+        self.screen.blit(self.smallFont.render(f'White: {white}  |  Black: {black}', True, 'White'), (825, 114))
+        turn = 'Your turn (White)' if self.currentPlayer == 1 else 'Computer turn'
+        self.screen.blit(self.coachFont.render(turn, True, (230, 200, 150)), (825, 150))
+
+        if self.state == 'playing':
+            for button in self.coachButtons.values():
+                button.draw(self.screen, self.smallFont, mouse)
+
+        self.screen.blit(self.smallFont.render('COACH - AB DEPTH 6', True, (230, 200, 150)), (825, 330))
+        y = 369
+        if self.coachError:
+            y = self.drawWrappedText('Coach error: ' + self.coachError, 825, y, 250, (255, 170, 120))
+        elif self.coachRequest is not None:
+            y = self.drawWrappedText('Analyzing position... You can still play.', 825, y, 250)
+        elif self.coachView == 'hint' and self.coachCache is not None:
+            y = self.drawWrappedText('HINT:', 825, y, 250, (230, 200, 150))
+            y = self.drawWrappedText(self.coachCache['hint'], 825, y + 4, 250)
+            y = self.drawWrappedText('Use Show Answer to reveal the best move.', 825, y + 14, 250, (190, 180, 160))
+        elif self.coachView == 'answer' and self.coachCache is not None:
+            data = self.coachCache
+            y = self.drawWrappedText(
+                f'BEST: {self.moveLabel(data["move"])} | Score {data["score"]:+d}',
+                825, y, 250, (240, 208, 100))
+            y = self.drawWrappedText('Stats: You / Computer', 825, y + 4, 250, (190, 180, 160))
+            y = self.drawWrappedText(
+                f'Flipped: {data["flips"]} | Corners: {data["own_corners"]}/{data["enemy_corners"]}',
+                825, y, 250)
+            y = self.drawWrappedText(
+                f'Moves: {data["own_mobility"]}/{data["enemy_mobility"]} | Discs: {data["own_discs"]}/{data["enemy_discs"]}',
+                825, y, 250)
+            y = self.drawWrappedText('EXPLANATION:', 825, y + 13, 250, (230, 200, 150))
+            y = self.drawWrappedText(data['explanation'], 825, y + 5, 250)
+        elif self.currentPlayer != 1 and self.state == 'playing':
+            y = self.drawWrappedText('Wait for the computer to move.', 825, y, 250)
+        else:
+            y = self.drawWrappedText(
+                'Get Hint: strategic advice without a square. Show Answer: best move and explanation.',
+                825, y, 250)
+
+        if self.message:
+            self.drawWrappedText(self.message, 825, 663, 250, (255, 200, 100), maxY=719)
+        if self.state == 'playing':
+            self.pauseButton.draw(self.screen, self.font, mouse)
 
     def nextTurn(self):
         """Switch player. Skip a player who has no moves. End the game if nobody can move."""
@@ -647,12 +898,18 @@ class Othello:
                 if event.button == 1:
                     if self.state == 'menu':
                         self.clickMenu(event.pos)
+                    elif self.state == 'playmode':
+                        self.clickPlayMode(event.pos)
                     elif self.state == 'difficulty':
                         self.clickDifficulty(event.pos)
                     elif self.state == 'playing':
                         # Tombol Pause dicek dulu supaya tetap bisa diklik saat giliran komputer
                         if self.pauseButton.isClicked(event.pos):
                             self.pauseGame()
+                        elif self.isPracticeTurn() and self.coachButtons['hint'].isClicked(event.pos):
+                            self.requestCoach('hint')
+                        elif self.isPracticeTurn() and self.coachButtons['answer'].isClicked(event.pos):
+                            self.requestCoach('answer')
                         else:
                             self.clickBoard(event.pos)
                     elif self.state == 'paused':
@@ -672,7 +929,7 @@ class Othello:
         if self.menuButtons['1v1'].isClicked(pos):
             self.startGame('1v1')
         elif self.menuButtons['ai'].isClicked(pos):
-            self.state = 'difficulty'
+            self.state = 'playmode'
         elif self.menuButtons['benchmark'].isClicked(pos):
             self.state = 'benchmark'
         elif self.menuButtons['tut'].isClicked(pos):
@@ -682,13 +939,23 @@ class Othello:
         elif self.menuButtons['quit'].isClicked(pos):
             self.RUN = False
 
+    def clickPlayMode(self, pos):
+        if self.playModeButtons['normal'].isClicked(pos):
+            self.playStyle = 'normal'
+            self.state = 'difficulty'
+        elif self.playModeButtons['practice'].isClicked(pos):
+            self.playStyle = 'practice'
+            self.state = 'difficulty'
+        elif self.playModeButtons['back'].isClicked(pos):
+            self.state = 'menu'
+
     def clickDifficulty(self, pos):
         if self.difficultyButtons['easy'].isClicked(pos):
-            self.startGame('ai', 'easy')
+            self.startGame('ai', 'easy', self.playStyle)
         elif self.difficultyButtons['hard'].isClicked(pos):
-            self.startGame('ai', 'hard')
+            self.startGame('ai', 'hard', self.playStyle)
         elif self.difficultyButtons['back'].isClicked(pos):
-            self.state = 'menu'
+            self.state = 'playmode'
 
     def pauseGame(self):
         self.state = 'paused'
@@ -701,13 +968,13 @@ class Othello:
         if self.pauseButtons['resume'].isClicked(pos):
             self.resumeGame()
         elif self.pauseButtons['restart'].isClicked(pos):
-            self.startGame(self.mode, self.difficulty)   # mulai ulang dengan pengaturan yang sama
+            self.startGame(self.mode, self.difficulty, self.playStyle)   # pengaturan yang sama
         elif self.pauseButtons['menu'].isClicked(pos):
             self.state = 'menu'
 
     def clickGameOver(self, pos):
         if self.gameOverButtons['retry'].isClicked(pos):
-            self.startGame(self.mode, self.difficulty)   # same settings as before
+            self.startGame(self.mode, self.difficulty, self.playStyle)   # same settings as before
         elif self.gameOverButtons['menu'].isClicked(pos):
             self.state = 'menu'
 
@@ -791,6 +1058,7 @@ class Othello:
 
     def playMove(self, row, col):
         """Place a token, flip the captured tokens (with animation), switch turn."""
+        self.resetCoach()       # the previous hint/answer no longer applies
         grid = self.grid
         mover = self.currentPlayer                   # remember who moved, because nextTurn() switches it
 
@@ -819,7 +1087,8 @@ class Othello:
     # ---------- Update ----------
 
     def update(self):
-        """Runs every frame: computer's turn, and the benchmark when it is running."""
+        """Runs every frame: computer's turn, benchmark and coach results."""
+        self.updateCoach()
         if self.state == 'playing' and self.mode == 'ai' and self.currentPlayer == self.aiPlayer:
             # Wait 600 ms so the computer's move doesn't happen instantly
             if pygame.time.get_ticks() - self.lastMoveTime >= 600:
@@ -855,6 +1124,8 @@ class Othello:
 
         if self.state == 'menu':
             self.drawMenu(mousePos)
+        elif self.state == 'playmode':
+            self.drawPlayMode(mousePos)
         elif self.state == 'difficulty':
             self.drawDifficulty(mousePos)
         elif self.state == 'benchmark':
@@ -907,9 +1178,16 @@ class Othello:
         for button in self.menuButtons.values():
             button.draw(self.screen, self.font, mousePos)
 
+    def drawPlayMode(self, mousePos):
+        self.screen.fill((35, 25, 15))
+        self.drawCentered('Choose Mode', self.bigFont, 250, (230, 200, 150))
+        for button in self.playModeButtons.values():
+            button.draw(self.screen, self.font, mousePos)
+
     def drawDifficulty(self, mousePos):
         self.screen.fill((35, 25, 15))
-        self.drawCentered('Choose Difficulty', self.bigFont, 250, (230, 200, 150))
+        style = 'Practice' if self.playStyle == 'practice' else 'Normal'
+        self.drawCentered(f'{style}: Choose Difficulty', self.bigFont, 250, (230, 200, 150))
         for button in self.difficultyButtons.values():
             button.draw(self.screen, self.font, mousePos)
 
@@ -978,6 +1256,9 @@ class Othello:
 
     def drawScorePanel(self):
         """Right side panel (x = 800 to 1100): mode, current turn, and token counts."""
+        if self.mode == 'ai' and self.playStyle == 'practice':
+            self.drawPracticePanel()
+            return
         white, black = self.grid.countTokens(self.grid.gridLogic)
 
         # Panel background
@@ -1144,6 +1425,16 @@ class Grid:
                 # Small white square in the middle of the cell
                 pygame.draw.rect(window, 'White', (80 + col * 80 + 30, 80 + row * 80 + 30, 20, 20))
                 
+        # Highlight only the currently recommended legal square in Practice.
+        if (self.GAME.isPracticeTurn() and not self.animating
+                and self.GAME.coachView == 'answer'
+                and self.GAME.coachCache is not None
+                and self.GAME.coachCacheKey == self.GAME.coachKey()):
+            row, col = self.GAME.coachCache['move']
+            pygame.draw.rect(window, (0, 255, 0),
+                             (80 + col * 80 + 3, 80 + row * 80 + 3, 74, 74),
+                             5, border_radius=7)
+
         if self.GAME.state == 'tut' and not self.animating and not self.GAME.tutorialDone:
             step = TutorialData.TUTORIAL_STEPS[self.GAME.tutorialStep]
             if step['goal'] == 'move':
