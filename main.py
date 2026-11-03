@@ -19,20 +19,28 @@ def directions(row, col, minRow=0, minCol=0, maxRow=7, maxCol=7):
     validDirections = []
     # Cells above
     if row != minRow: validDirections.append((row - 1, col))
+    # Top-left
     if row != minRow and col != minCol: validDirections.append((row - 1, col - 1))
+    # Top-right
     if row != minRow and col != maxCol: validDirections.append((row - 1, col + 1))
     # Cells below
     if row != maxRow: validDirections.append((row + 1, col))
+    # Bottom-Left
     if row != maxRow and col != minCol: validDirections.append((row + 1, col - 1))
+    # Bottom-Right
     if row != maxRow and col != maxCol: validDirections.append((row + 1, col + 1))
     # Cells left and right
+    # Left
     if col != minCol: validDirections.append((row, col - 1))
+    # Right
     if col != maxCol: validDirections.append((row, col + 1))
     return validDirections
 
 
 def loadImages(path, size):
     """Load an image file and scale it to the given size."""
+    
+    # Load the assets needed and optimizes the loaded picture for displaying
     img = pygame.image.load(path).convert_alpha()
     return pygame.transform.scale(img, size)
 
@@ -44,9 +52,13 @@ def loadSpriteSheet(sheet, col, row, newSize, size):
     newSize = final size on screen
     size    = size of one tile inside the sheet (32x32)
     """
+    # Create empty surface (initialization)
     image = pygame.Surface(size).convert_alpha()
+    # Extract the sprite using blit
     image.blit(sheet, (0, 0), (col * size[0], row * size[1], size[0], size[1]))
+    # Resize the blit extracted data for the board
     image = pygame.transform.scale(image, newSize)
+    # Set the pixels matching black transparency
     image.set_colorkey('Black')
     return image
 
@@ -56,20 +68,27 @@ def loadSpriteSheet(sheet, col, row, newSize, size):
 # =====================================================
 
 class Button:
+    # Initialize the structure for the button in the UI
     def __init__(self, text, center, size=(300, 60)):
         self.text = text
         self.rect = pygame.Rect(0, 0, size[0], size[1])
         self.rect.center = center                      # place the button by its centre
 
+    # Drawing the button
     def draw(self, window, font, mousePos):
         # Slightly lighter colour when the mouse hovers over the button
         hovering = self.rect.collidepoint(mousePos)
+        # Change color if hovering
         color = (130, 90, 45) if hovering else (90, 60, 30)
+        # Draw a rectangular for the button BG and border size
         pygame.draw.rect(window, color, self.rect, border_radius=8)
+        # Draw the border
         pygame.draw.rect(window, (230, 200, 150), self.rect, 3, border_radius=8)  # border
+        # The label for the text of the button
         label = font.render(self.text, True, 'White')
         window.blit(label, label.get_rect(center=self.rect.center))
 
+    # Event listener
     def isClicked(self, mousePos):
         return self.rect.collidepoint(mousePos)
 
@@ -92,33 +111,44 @@ class GBFSAgent:
     # Weight for the priority on what should be took into factor
     WC, WM, WF= 25, 5, 2
 
+    # Init the rules so the algorithm doesn't pick a random 
     def __init__(self, rules):
         self.rules = rules
 
     # Step  3
     def simulateMove(self, gridLogic, move, player):
+        # row and col of the candidate move
         row, col = move
+        # Find opponent disc that will be flipped
         toFlip = self.rules.swappableTiles(row, col, gridLogic, player)
+        # Duplicate the current board state
         newGrid = [rowGrid[:] for rowGrid in gridLogic]
+        # Place the player's disc (algorithm)
         newGrid[row][col] = player
+        # Find the opponent disc on the board
         for(rowSelected, columnSelected) in toFlip:
             newGrid[rowSelected][columnSelected] = player
+        # Return for the simulated board & numbers of flipped disc by the algorithm
         return newGrid, len(toFlip)
 
     # Step 4
     def cornerScore(self, grid, player):
         # player = CPU, -player = lawan (user)
+        # Looped for every corners in the game, if algorithm gots it, add 1, if player got it, add 1, if not 0
         cpuCorner = sum(1 for (row, column) in self.CORNERS if grid[row][column] == player)
         userCorner = sum(1 for (row, column) in self.CORNERS if grid[row][column] == -player)
         return cpuCorner - userCorner
 
     def mobilityScore(self, grid, player):
         # player = CPU, -player = lawan (user)
+        # Find all movement the algorithm have
         cpuMobility = len(self.rules.findAvailMoves(grid, player))
+        # Find all movement the player have
         userMobility = len(self.rules.findAvailMoves(grid, -player))
         return cpuMobility - userMobility
 
     def heuristicScore(self, grid, flipCount, player):
+        # The heuristic score for each of them (C(s), M(s) & F(s))
         C = self.cornerScore(grid, player)
         M = self.mobilityScore(grid, player)
         F = flipCount
@@ -127,8 +157,11 @@ class GBFSAgent:
     # From previous step, make a move
     # Update will be done when it exits the 
     def getMove(self, gridLogic, player):
+        # Find all available move the algorithm can do
         moves = self.rules.findAvailMoves(gridLogic, player)
+        # Debug
         print(f'Existing moves: {moves}')
+        # If there's no move, skip it
         if not moves:
             return None
         
@@ -141,14 +174,18 @@ class GBFSAgent:
             newGrid, flipCount = self.simulateMove(gridLogic, move, player)
             # Calculating the heuristic score
             h = self.heuristicScore(newGrid, flipCount, player)
+            # List of movement & heuristic score it had
             print("Move", move, "-> Score", h)
-            # Adding score to the variable scored
+            # Adding the move and the score in the variable
             scored.append((h, move))
-
+            
+        # Step 5
         # Return the best moves made after calculating
         bestHeuristicScore = max(h for h, _ in scored)
         bestMoves = [m for h, m in scored if h == bestHeuristicScore]
         print("Best score: ", bestHeuristicScore, "Move taken: ", bestMoves)
+        # Use the bestMoves as the next best move (use random incase 2 move have the same h score)
+        # Step 6
         return random.choice(bestMoves)
 
 
@@ -183,10 +220,14 @@ class AlphaBetaAgent:
         self.executionTime = 0.0
         self.lastScore = None
 
+    # Creates a copy of the board   
     def _simulate(self, board, move, player):
         """Create a *copy* of the board after a legal move."""
+        # row and col for the candidate move
         row, col = move
+        # Make a new board
         new_board = [line[:] for line in board]
+        # 
         flips = self.rules.swappableTiles(row, col, new_board, player)
         new_board[row][col] = player
         for r, c in flips:
@@ -201,6 +242,7 @@ class AlphaBetaAgent:
             reverse=True,
         )
 
+    # Evaluate
     def _evaluate(self, board, ai_player):
         """Evaluate a position from the perspective of the AI.
 
@@ -319,19 +361,30 @@ class PracticeCoach:
 
     def __init__(self, rules):
         self.rules = rules
-
+        
+    # Analyzing the board and player
     def analyze(self, board, player):
+        # Agent will use the AlphaBeta
         agent = AlphaBetaAgent(self.rules, depth=self.DEPTH)
+        # Agent will take the best move for the answer
         best_move = agent.getMove(board, player)
+        # If there's none, continue
         if best_move is None:
             return None
 
+        # Take all availabale move
         moves = self.rules.findAvailMoves(board, player)
+        # Initialize options
         options = {}
+        # Loop for every available move
         for move in moves:
+            # The result will be simulated by the agent
             result = agent._simulate(board, move, player)
+            # Summing total disc owned by the player
             own_discs = sum(v == player for row in result for v in row)
+            # Summing total disc owned by the algorithm
             enemy_discs = sum(v == -player for row in result for v in row)
+            # Based on the move, add the following data:
             options[move] = {
                 'own_mobility': len(self.rules.findAvailMoves(result, player)),
                 'enemy_mobility': len(self.rules.findAvailMoves(result, -player)),
@@ -345,9 +398,12 @@ class PracticeCoach:
                 'enemy_discs': enemy_discs,
                 'flips': len(self.rules.swappableTiles(move[0], move[1], board, player)),
             }
-
+        
+        # Select a movement and take the data from the options dict.
         selected = options[best_move]
+        # Retrieve aall information about every movement
         other = [v for m, v in options.items() if m != best_move]
+        # Gives advice based on the the things the players have (advantage)
         if best_move in AlphaBetaAgent.CORNERS:
             hint = 'Ada sudut yang bisa kamu amankan. Perhatikan kotak-kotak di pojok papan.'
             explanation = 'Langkah ini menguasai sudut. Bidak di sudut tidak bisa dibalik oleh lawan.'
@@ -367,6 +423,7 @@ class PracticeCoach:
             hint = 'Bandingkan langkah yang tersedia. Perhatikan sudut, mobilitas, dan balasan lawan.'
             explanation = 'Coach memilih langkah ini berdasarkan pencarian Alpha-Beta depth 6; tidak ada satu faktor langsung yang cukup menjelaskan seluruh keputusan.'
 
+        # Returns advice for the plater and the explanation
         return {
             'move': best_move,
             'score': agent.lastScore,
@@ -401,6 +458,7 @@ class BenchmarkRunner:
     def startGame(self):
         # Selang-seling siapa yang jalan duluan (putih) supaya seimbang
         self.abFirst = (self.gameIndex % 2 == 0)
+        # Initialize the algorithm
         ab = ('AlphaBeta', AlphaBetaAgent(self.rules, self.depth))
         gb = ('GBFS', GBFSAgent(self.rules))
         self.agents = {1: ab, -1: gb} if self.abFirst else {1: gb, -1: ab}
@@ -423,76 +481,120 @@ class BenchmarkRunner:
     def step(self):
         """Mainkan satu langkah (atau pass / akhiri game)."""
         rules, board = self.rules, self.board
+        # Mencari semua gerakan yang dapat dilakukan oleh algoritma
         moves = rules.findAvailMoves(board, self.player)
 
+        # Apabila tidak ada gerakan yang dapat dilakukan oleh Algoritma
         if not moves:
+            # Apabila lawan algoritma tidak juga dapat berjalan, akhiri game
             if not rules.findAvailMoves(board, -self.player):
                 self.endGame()                      # kedua pemain tidak bisa jalan
+            # Jika tidak, ganti giliran
             else:
                 self.player = -self.player          # pass
             return
 
+        # Taking which algorithm first
         name, agent = self.agents[self.player]
+        # Starting the game
         start = time.perf_counter()
+        # Hiding the output made by the algorithm
         with redirect_stdout(io.StringIO()):        # sembunyikan print bawaan agent
+            # Do movement based on the player
             move = agent.getMove(board, self.player)
+        # Time elapsed for the game
         elapsed = time.perf_counter() - start
 
+        # Ig alforithm is Alpha-Beta
         if name == 'AlphaBeta':
+            # Take the explored nodes and the count of pruning done
             nodes, cutoffs = agent.nodesExplored, agent.pruningCount
+        # If it's not Alpha-Beta, GBFS is choosen and just take the amount of nodes
         else:
             nodes, cutoffs = len(moves), 0          # GBFS: node = jumlah kandidat yang dievaluasi
+        # Move done is appended
         self.moves.append((name, elapsed, nodes, cutoffs))
 
+        # Selecting a row and col as a candidate movement
         row, col = move
+        # Find all enemy discs that will be flipped if the current algorithm places it at that specific place
         flips = rules.swappableTiles(row, col, board, self.player)
+        # Places a new disc on row and col from the current player
         board[row][col] = self.player
+        # Loop for every disc that's flipped
         for r, c in flips:
             board[r][c] = self.player
+        # Change player
         self.player = -self.player
 
+    # Ending the game if there's no movement
     def endGame(self):
+        # Count the disc it have
         white, black = self.rules.countTokens(self.board)
+        # Identifying whose side has the color white and black (Alpha Beta is black and GBFS is white)
+        # if AB is first then AlphaBeta is black and GBFS is white
         abDiscs, gbDiscs = (white, black) if self.abFirst else (black, white)
+        # Winning condition
         if abDiscs > gbDiscs:   winner = 'AlphaBeta'
         elif gbDiscs > abDiscs: winner = 'GBFS'
         else:                   winner = 'Draw'
 
+        # Append the game result
         self.games.append({'game': self.gameIndex + 1, 'abFirst': self.abFirst,
                            'abDiscs': abDiscs, 'gbDiscs': gbDiscs, 'winner': winner})
+        # Add index
         self.gameIndex += 1
 
+        # If the index is more than the total games needed, end
         if self.gameIndex >= self.totalGames:
             self.finished = True
+        # If not, start a new game
         else:
             self.startGame()
 
+    # Summary from the all of the games that have been done
     def summaryLines(self):
         """Ringkasan untuk 4 metrik di proposal (dipakai untuk layar dan console)."""
+        # Untuk benchmark, n adalah jumlah permainan
         n = len(self.games)
+        # Totalkan jumlah menang dari AB & GBFS
         abWins = sum(g['winner'] == 'AlphaBeta' for g in self.games)
         gbWins = sum(g['winner'] == 'GBFS' for g in self.games)
+        # Number of games that have ended in a tie
         draws = n - abWins - gbWins
 
+        # Lines for the summary 
         lines = [
             f'Alpha-Beta (depth {self.depth}) vs GBFS | {n} games',
             f'Win rate   : AB {abWins} ({abWins / n * 100:.1f}%) | '
             f'GBFS {gbWins} ({gbWins / n * 100:.1f}%) | Draw {draws} ({draws / n * 100:.1f}%)',
         ]
+        # Compare Alpha Beta first & second position (determines if AlphaBeta plays as the one who moves first and last)
         for label, flag in (('AB first ', True), ('AB second', False)):
+            # Collects the current flag of the game (Collects the data of the game if AB is the one who moves first and last)
             sub = [g for g in self.games if g['abFirst'] == flag]
+            # If there's any games contained, do the code
             if sub:
+                # Counts how many wind one by Alpha Beta
                 w = sum(g['winner'] == 'AlphaBeta' for g in sub)
+                # Adds the result to the summary 
                 lines.append(f'{label}  : AB won {w}/{len(sub)}')
 
+        # Calculate margins of disc between the winner and loser
         margins = [abs(g['abDiscs'] - g['gbDiscs']) for g in self.games]
+        # Same thing but keeps the positive and negative difference (raw data)
         signed = [g['abDiscs'] - g['gbDiscs'] for g in self.games]
+        # Adds the result to the summary
         lines.append(f'Avg margin : {mean(margins):.2f} discs (winner - loser)')
         lines.append(f'Avg AB-GBFS: {mean(signed):+.2f} discs')
 
+        # Collect the execution time that's done based on the Algorithm
         times = {k: [m[1] * 1000 for m in self.moves if m[0] == k] for k in ('AlphaBeta', 'GBFS')}
+        # Collects the node explored by each algorithm
         nodes = {k: [m[2] for m in self.moves if m[0] == k] for k in ('AlphaBeta', 'GBFS')}
+        # Collects the pruning done by Alpha Beta
         cuts = [m[3] for m in self.moves if m[0] == 'AlphaBeta']
+        # Add the data to the summary
         lines.append(f'Time/move  : AB {mean(times["AlphaBeta"]):.2f} ms (max {max(times["AlphaBeta"]):.1f}) | '
                      f'GBFS {mean(times["GBFS"]):.2f} ms (max {max(times["GBFS"]):.1f})')
         lines.append(f'Nodes/move : AB {mean(nodes["AlphaBeta"]):.1f} (max {max(nodes["AlphaBeta"])}) | '
@@ -505,17 +607,24 @@ class BenchmarkRunner:
         """Buat folder hasil kalau belum ada, lalu return path-nya.
         Folder ada di sebelah main.py (bukan di working directory),
         jadi lokasinya selalu sama walau game dijalankan dari folder lain."""
+        # Take the absolute path to the folder
         baseDir = os.path.dirname(os.path.abspath(__file__))
+        # Make a new folder on that path
         folder = os.path.join(baseDir, cls.RESULT_DIR)
+        # Make sure the folder is there
         os.makedirs(folder, exist_ok=True)      # tidak error kalau folder sudah ada
         return folder
 
+    # Saving the benchmark in a form of a .CSV file
     def saveCsv(self):
+        # Ensure folder exist
         folder = self.ensureResultDir()         # dibuat otomatis kalau belum ada / terhapus
 
+        # Membuat file untuk game dan gerakan yang dilakukan pada folder tersebut
         gamesFile = os.path.join(folder, f'hasil_games_depth{self.depth}.csv')
         movesFile = os.path.join(folder, f'hasil_moves_depth{self.depth}.csv')
 
+        # Menuliskan isi dari .csv file untuk game dan gerakannya
         with open(gamesFile, 'w', newline='') as f:
             w = csv.DictWriter(f, fieldnames=self.games[0].keys())
             w.writeheader()
@@ -669,7 +778,8 @@ class Othello:
         self.currentPlayer = 1
         self.message = ''
         self.lastMoveTime = pygame.time.get_ticks()
-
+        
+        # If player 1 vs AI, then picked based on what they choose
         if mode == 'ai':
             if difficulty == 'easy':
                 self.agent = GBFSAgent(self.grid)
@@ -681,7 +791,6 @@ class Othello:
         self.state = 'playing'
 
     # ---------- Practice Coach ----------
-
     def resetCoach(self):
         """Invalidate hints after every move, restart or new game."""
         self.coachGeneration += 1
@@ -867,11 +976,18 @@ class Othello:
     # ---------- Loading Tutorial Steps ----------
     
     def loadTutorialStep(self):
+        # Take the steps on tutorialdata
         step = TutorialData.TUTORIAL_STEPS[self.tutorialStep]
+        # Check if the board is available
         if step['board'] is not None:
+            # If it's available, load the board for tutorial
             self.grid.loadBoardForTutorial(step['board'])
+        # Take players value for determining who'se next (in this context)
+        # just changing player's token appearance
         self.currentPlayer = step.get('player', 1)
+        # The mode it uses is the 1v1
         self.mode = '1v1'
+        # Assumed the tutorial is still on-going
         self.tutorialDone = False
         self.state = 'tut'
         
@@ -1021,20 +1137,33 @@ class Othello:
             if(row, col) == step['target']:
                 self.playTutorialMove(row, col)
     
+    # For the logic on the game's tutorial
     def playTutorialMove(self, row, col):
+        # Make a grid
         grid = self.grid
+        # Stores the coordinate of all enemy disc needs to be flipped
         toFlip = grid.swappableTiles(row, col, grid.gridLogic, self.currentPlayer)
+        # Insert the player's disc based on the current player
         grid.insertToken(grid.gridLogic, self.currentPlayer, row, col)
+        # Animating for the disc flip
         grid.animateTransitions(toFlip, self.currentPlayer)
+        # Loop based on the numbers of coordinates of opponent discs needs to flipped 
         for(r, c) in toFlip:
+            # Update the logical board
             grid.gridLogic[r][c] *= -1
+            # Update the visual disc
             grid.tokens[(r, c)].player *= -1
+        # After that, it's done
         self.tutorialDone = True
         
+    # For moving to the next part of the tutorial
     def advanceTutorial(self):
+        # Every call goes to the next step
         self.tutorialStep += 1
+        # If the tutorial is done, return to the menu
         if self.tutorialStep >= len(TutorialData.TUTORIAL_STEPS):
             self.state = 'menu'
+        # If the tutorial is not done, continue
         else:
             self.loadTutorialStep()
                 
@@ -1151,7 +1280,9 @@ class Othello:
         pygame.display.update()
         
     def drawTutorialPanel(self):
+        # Get the cursor position
         mousePos = pygame.mouse.get_pos()
+        # Take the tutorial steps that's needed
         step = TutorialData.TUTORIAL_STEPS[self.tutorialStep]
         pygame.draw.rect(self.screen, (35, 25, 15), (800, 0, 300, 800))
         pygame.draw.line(self.screen, (230, 200, 150), (800,0), (800, 800), 2)
@@ -1159,12 +1290,16 @@ class Othello:
             f'Step {self.tutorialStep + 1}/{len(TutorialData.TUTORIAL_STEPS)}', True, (230, 200, 150)
         ), (830, 60))
         
+        # Loop for every text that's available
         for i, line in enumerate(step['text']):
+            # Print the text in the UI (the tutorial text)
             self.screen.blit(self.smallFont.render(line, True, 'White'), (815, 130 + i * 36))
             
-        
+        # Check if the next button should appear ot not (if not, then the tutorial ends)
         if step['goal'] == 'next' or self.tutorialDone:
+            # Draw the next button if not end and the tutorial still have steps
             self.tutorialButton['next'].draw(self.screen, self.font, mousePos)
+        # Draw the button that directs back to the menu
         self.tutorialButton['menu'].draw(self.screen, self.font, mousePos)
 
     def drawCentered(self, text, font, y, color='White'):
@@ -1199,16 +1334,25 @@ class Othello:
             button.draw(self.screen, self.font, mousePos)
 
     def drawBenchRun(self, mousePos):
+        # Get benchmark information on the total game and the current index of the game
         bm = self.benchmark
         done, total = bm.gameIndex, bm.totalGames
 
         # Papan game benchmark yang sedang berjalan (tanpa animasi flip)
+        
+        # Clear the screens to clear previous drawing
         self.screen.fill((0, 0, 0))
+        # Draw the bg background
         self.screen.blit(self.grid.gridBg, (0, 0))
+        # loop for each row
         for r in range(8):
+            # loop for each column
             for c in range(8):
+                # If that specific part of the board is not empty
                 if bm.board[r][c] != 0:
+                    # Placing the token based on the player
                     img = self.grid.whitetoken if bm.board[r][c] == 1 else self.grid.blacktoken
+                    # Draws the token that's placed there
                     self.screen.blit(img, (80 + c * 80, 80 + r * 80))
 
         # Panel kanan
@@ -1242,16 +1386,21 @@ class Othello:
         self.screen.blit(self.smallFont.render(f'Alpha-Beta: {abWins}', True, 'White'), (830, 575))
         self.screen.blit(self.smallFont.render(f'GBFS: {gbWins}', True, 'White'), (830, 610))
 
+        # Loop through every available button in the benchmark
         for button in self.benchRunButtons.values():
+            # Draw the button
             button.draw(self.screen, self.font, mousePos)
 
     def drawBenchResult(self, mousePos):
         self.screen.fill((35, 25, 15))
         self.drawCentered('Benchmark Result', self.bigFont, 90, (230, 200, 150))
+        # Loop for each lines that will be displayed on the result
         for i, line in enumerate(self.benchLines):
             label = self.smallFont.render(line, True, 'White')
             self.screen.blit(label, (100, 170 + i * 42))
+        # Loop through every available button in the benchmark
         for button in self.benchResultButtons.values():
+            # Draw the buttons
             button.draw(self.screen, self.font, mousePos)
 
     def drawScorePanel(self):
@@ -1361,18 +1510,26 @@ class Grid:
 
     # ---------- Background ----------
 
+    # Loading the background image for the game board
     def loadBackGroundImages(self):
         """Cut every tile out of the wood sprite sheet and name it like 'A0', 'B1', ..."""
         alpha = 'ABCDEFGHI'
+        # Load the sprite image for the baackground
         spriteSheet = pygame.image.load('assets/wood.png').convert_alpha()
+        # Initialize the variable to store the sprite 
         imageDict = {}
+        # looping for the wood.png sprite
         for i in range(3):          # sprite sheet rows
             for j in range(7):      # sprite sheet columns
+                # Create dictionary based on the board name "C0","B0","B0" and etc then 
+                # extract the image based on col j & row i and store the image
                 imageDict[alpha[j] + str(i)] = loadSpriteSheet(spriteSheet, j, i, self.size, (32, 32))
         return imageDict
 
+    # Creating the background image to the game
     def createbgimg(self):
         """Build one big background image: a 10x10 layout (8x8 board + border)."""
+        # grid for the game
         gridBg = [
             ['C0', 'D0', 'D0', 'D0', 'D0', 'D0', 'D0', 'D0', 'D0', 'E0'],  # top border
             ['C1', 'A0', 'B0', 'A0', 'B0', 'A0', 'B0', 'A0', 'B0', 'E1'],  # board rows
@@ -1385,9 +1542,13 @@ class Grid:
             ['C1', 'B0', 'A0', 'B0', 'A0', 'B0', 'A0', 'B0', 'A0', 'E1'],
             ['C2', 'D2', 'D2', 'D2', 'D2', 'D2', 'D2', 'D2', 'D2', 'E2'],  # bottom border
         ]
+        # Create an empty surface for the board to be made
         image = pygame.Surface((10 * self.size[0], 10 * self.size[1]))
+        # outer loop for the bg where j is index and row is the data
         for j, row in enumerate(gridBg):
+            # inner loop where the i is index and the name for the to;e
             for i, name in enumerate(row):
+                # Add the image onto the empty surface
                 image.blit(self.bg[name], (i * self.size[0], j * self.size[1]))
         return image
 
@@ -1395,7 +1556,9 @@ class Grid:
 
     def regenGrid(self, rows, columns):
         """Create an empty 8x8 logic grid and place the 4 starting tokens in the centre."""
+        # Emptying the grid
         grid = [[0 for _ in range(columns)] for _ in range(rows)]
+        # Placing the initial token for playing othello
         self.insertToken(grid, 1, 3, 3)    # white
         self.insertToken(grid, -1, 3, 4)   # black
         self.insertToken(grid, 1, 4, 4)    # white
@@ -1412,35 +1575,53 @@ class Grid:
 
     def drawGrid(self, window):
         """Draw background, all tokens, and markers showing the legal moves."""
+        # Draw the board background onto the window
         window.blit(self.gridBg, (0, 0))
 
+        # For each tokens in the grid, draw the token
         for token in self.tokens.values():
             token.draw(window)
 
         # Don't show markers during animation, game over, or the computer's turn
+        # Validating if it's the player turn or the algorithm
         humanTurn = not (self.GAME.mode == 'ai' and self.GAME.currentPlayer == self.GAME.aiPlayer)
+        # If it's not doing any animation, game is playing and is player turn
         if not self.animating and self.GAME.state == 'playing' and humanTurn:
+            # Find all available moves of the player
             availMoves = self.findAvailMoves(self.gridLogic, self.GAME.currentPlayer)
+            # Loop for every available moves of the player
             for (row, col) in availMoves:
                 # Small white square in the middle of the cell
                 pygame.draw.rect(window, 'White', (80 + col * 80 + 30, 80 + row * 80 + 30, 20, 20))
                 
         # Highlight only the currently recommended legal square in Practice.
+        # If it's in practice and not doing animation
         if (self.GAME.isPracticeTurn() and not self.animating
+                # and view must set to answer
                 and self.GAME.coachView == 'answer'
+                # the cache is not none
                 and self.GAME.coachCache is not None
+                # the cache must be the same as current game
                 and self.GAME.coachCacheKey == self.GAME.coachKey()):
+            # Take the row and col for the advised movement from the coach
             row, col = self.GAME.coachCache['move']
+            # make it to be a rectangle
             pygame.draw.rect(window, (0, 255, 0),
                              (80 + col * 80 + 3, 80 + row * 80 + 3, 74, 74),
                              5, border_radius=7)
 
+        # If it's in a tutorial and it's not done
         if self.GAME.state == 'tut' and not self.animating and not self.GAME.tutorialDone:
+            # Take the steps that available
             step = TutorialData.TUTORIAL_STEPS[self.GAME.tutorialStep]
+            # If the step requires for moving
             if step['goal'] == 'move':
+                # Take the row and column position for the placement of the disc
                 r, c = step['target']
+                # Highlight it
                 pygame.draw.rect(window, (225, 220, 0), (80 + c * 80 + 25, 80 + r * 80 + 25, 30, 30))
 
+    # Debugging for the Game Logic
     def printGameLogicBoard(self):
         """Debug helper: print the logic grid to the terminal."""
         print('  | A | B | C | D | E | F | G | H |')
@@ -1528,17 +1709,27 @@ class Grid:
             pygame.event.pump()                       # keep the window responsive
             pygame.time.delay(100)                    # milliseconds per frame
 
+        # Checking for cells that's affected, the disc shown is the final change.
         for cell in cells:                            # finish with the final token image
             self.tokens[cell].image = finalImage
+        # End the state of animation
         self.animating = False
         
+    # Loading the board game for the tutorials
     def loadBoardForTutorial(self, board, window=None):
+        # Empty the tokens for the tutorial
         self.tokens = {}
+        # Reset the logical board, make each row and column to be an empty position
         self.gridLogic = [[0] * self.x for _ in range(self.y)]
+        # Loop for each row in y
         for r in range(self.y):
+            # Loop for each column in x
             for c in range(self.x):
+                # If the row and column position of the board is not empty
                 if board[r][c] != 0:
+                    # Insert the disc.
                     self.insertToken(self.gridLogic, board[r][c], r, c)
+        # stop the animation for flipping the disc
         self.animating = False
 
 
@@ -1557,6 +1748,7 @@ class Token:
         self.GAME = main
         self.image = image                            # current image (changes during animation)
 
+    # Extracting the disc image using the blit
     def draw(self, window):
         window.blit(self.image, (self.posX, self.posY))
 
