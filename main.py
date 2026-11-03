@@ -613,23 +613,34 @@ class BenchmarkRunner:
         lines.append(f'Avg margin : {mean(margins):.2f} discs (winner - loser)')
         lines.append(f'Avg P1-P2  : {mean(signed):+.2f} discs')
 
+        # Collect benchmark data
         def vals(slot, idx, scale=1):
+            # Creates a temporart list and returns with selected data (idx)
             return [m[idx] * scale for m in self.moves if m[4] == slot]
 
+        # Collect the tiime execution for each algorithm
         def timeText(slot):
+            # In this case, slot are the one who's the current plater, the data is 1 (execution time) and scale it to miliseconds (*1000) 
             v = vals(slot, 1, 1000)
+            # Return it in a form of string
             return f'{mean(v):.2f} ms (max {max(v):.1f})' if v else '-'
 
+        # Collect the data of the nodes
         def nodeText(slot):
+            # The data is 2 (nodes explored)
             v = vals(slot, 2)
             return f'{mean(v):.1f} (max {max(v)})' if v else '-'
 
         def cutText(slot):
+            # If alforithm choosed is not alpha beta, return -
             if self.algos[slot] != 'AlphaBeta':
                 return '-'
+            # The data is 3 (Pruning of the branch)
             v = vals(slot, 3)
+            # Return in form of string
             return f'{mean(v):.1f}' if v else '-'
 
+        # Save the data
         lines.append(f'Time/move  : P1 {timeText(1)} | P2 {timeText(2)}')
         lines.append(f'Nodes/move : P1 {nodeText(1)} | P2 {nodeText(2)}')
         lines.append(f'Cutoffs    : P1 {cutText(1)} | P2 {cutText(2)} per move')
