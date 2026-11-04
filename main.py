@@ -1769,6 +1769,7 @@ class Grid:
         black = sum(row.count(-1) for row in grid)
         return white, black
 
+    # Find all movement that can be placed withthe disc (no need to flip atleast 1)
     def findValidCells(self, grid, curPlayer):
         """Quick filter: empty cells that touch at least one opponent token.
         These are only CANDIDATES; findAvailMoves checks which ones are really legal."""
@@ -1783,6 +1784,7 @@ class Grid:
                         break                         # one is enough, go to next cell
         return candidates
 
+    # Checking all opponent tokens that will be flipped if a player placed it on row and col position
     def swappableTiles(self, row, col, grid, player):
         """Return all opponent tokens that would be flipped if `player`
         places a token at (row, col). Checks all 8 directions."""
